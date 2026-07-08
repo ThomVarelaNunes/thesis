@@ -1,0 +1,87 @@
+#!/bin/bash
+#SBATCH --job-name=vllm_inference
+#SBATCH --partition=gpu_h100
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gpus-per-node=4
+#SBATCH --time=00:25:00
+
+
+# Path to .sif apptainer. Use your own container or the prebuilt container below
+CONTAINER_PATH=/projects/2/managed_datasets/containers/vllm/vllm_25.09.sif
+# In case data is on project space define this such that apptainer binds the project space
+PROJECT_SPACE=
+
+# Prevent models from saving it /home/<user>/.cache
+DOWNLOAD_DIR=/scratch-shared/$USER/vllm/
+export HF_HOME=$DOWNLOAD_DIR
+mkdir -p $DOWNLOAD_DIR
+
+export HF_TOKEN=$(cat ~/.hf_token)
+MODEL_CHECKPOINT=meta-llama/Llama-3.3-70B-Instruct
+DATASET="/gpfs/home2/tvarelanunes/vllm-inference-slurm/data/words_full_dataset.jsonl"
+TEMPLATE_PRESET=interoception
+PORT=8000
+DATA_SPLIT=test # Load all data
+VLLM_BASE_URL=http://localhost:$PORT/v1
+TEMPERATURE=0.0
+MAX_TOKENS=16
+MAX_CONCURRENT=256
+OUTPUT_JSON="/gpfs/home2/tvarelanunes/vllm-inference-slurm/predictions/pred_llama_instruct/pred_llama_instruct2_temp0_full_dataset.jsonl"
+VLLM_INFERENCE_SCRIPT=/home/tvarelanunes/vllm-inference-slurm/src/vllm_serve.py
+
+BIND_DIRS="/scratch-shared/$USER,$PROJECT_SPACE"
+apptainer exec --nv \
+  -B "${BIND_DIRS}" \
+   "${CONTAINER_PATH}" \
+  vllm serve $MODEL_CHECKPOINT \
+  --tensor-parallel-size $SLURM_GPUS_ON_NODE \
+  --dtype bfloat16 \
+  --download-dir $DOWNLOAD_DIR \
+  --uvicorn-log-level warning \
+  --port $PORT &
+
+
+# Catch the process of the vllm server
+VLLM_PID=$!
+
+echo "Waiting for vLLM server to be ready..."
+MAX_WAIT=2500
+ELAPSED=0
+while ! curl -s http://localhost:$PORT/health > /dev/null; do
+    sleep 5
+    ELAPSED=$((ELAPSED + 5))
+    if [ ${ELAPSED} -ge ${MAX_WAIT} ]; then
+        echo "Error: vLLM server failed to start within ${MAX_WAIT} seconds"
+        kill ${VLLM_PID} 2>/dev/null
+        exit 1
+    fi
+    echo "Waiting... ${ELAPSED}s"
+done
+
+echo "Starting model prediction generation..."
+apptainer exec --nv \
+  -B "${BIND_DIRS}" \
+  "${CONTAINER_PATH}" \
+  python $VLLM_INFERENCE_SCRIPT \
+    --model "$MODEL_CHECKPOINT" \
+    --dataset "$DATASET" \
+    --split $DATA_SPLIT \
+    --template_preset "$TEMPLATE_PRESET" \
+    --base_url "$VLLM_BASE_URL" \
+    --temperature "$TEMPERATURE" \
+    --max_tokens "$MAX_TOKENS" \
+    --max_concurrent "$MAX_CONCURRENT" \
+    --output "$OUTPUT_JSON"
+
+
+# First, try graceful shutdown with SIGTERM
+kill ${VLLM_PID} 2>/dev/null
+
+# Wait a few seconds for graceful shutdown
+sleep 5
+
+kill -9 ${VLLM_PID} 2>/dev/null
+wait ${VLLM_PID} 2>/dev/null
+
+echo "vLLM server stopped."
