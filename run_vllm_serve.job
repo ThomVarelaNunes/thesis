@@ -6,29 +6,70 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --time=00:25:00
 
+# ==============================================================
+# SET THESE TO YOUR OWN PATHS AND MODEL
+# ==============================================================
 
-# Path to .sif apptainer. Use your own container or the prebuilt container below
+# Root of your checkout of this repository on the cluster.
+REPO_DIR=$HOME/thesis
+
+# Where the inference scripts live (vllm_serve.py, base_transformer.py).
+SCRIPT_DIR=$REPO_DIR
+
+# Input word list and where the predictions should be written.
+DATASET=$REPO_DIR/words_full_dataset.jsonl
+OUTPUT_DIR=$REPO_DIR/predictions
+mkdir -p "$OUTPUT_DIR"
+
+# --- Pick ONE of the three runs by uncommenting its block ------
+
+# Llama 3.3-70B Instruct (American instruct model)
+MODEL_CHECKPOINT=meta-llama/Llama-3.3-70B-Instruct
+TEMPLATE_PRESET=interoception
+TEMPERATURE=0.0
+VLLM_INFERENCE_SCRIPT=$SCRIPT_DIR/vllm_serve.py
+OUTPUT_JSON=$OUTPUT_DIR/pred_llama_instruct_temp0_full_dataset.jsonl
+
+# Qwen 2.5-72B Instruct (Chinese instruct model)
+# MODEL_CHECKPOINT=Qwen/Qwen2.5-72B-Instruct
+# TEMPLATE_PRESET=interoception
+# TEMPERATURE=0.0
+# VLLM_INFERENCE_SCRIPT=$SCRIPT_DIR/vllm_serve.py
+# OUTPUT_JSON=$OUTPUT_DIR/prediction_qwen_temp0_full_data_set.jsonl
+
+# Llama 3.1-70B Base (base model; temperature 0 makes it answer "0" for every
+# word, so it is run at 0.6 and invalid responses are retried afterwards)
+# MODEL_CHECKPOINT=meta-llama/Llama-3.1-70B
+# TEMPLATE_PRESET=base
+# TEMPERATURE=0.6
+# VLLM_INFERENCE_SCRIPT=$SCRIPT_DIR/base_transformer.py
+# OUTPUT_JSON=$OUTPUT_DIR/prediction_llama_base.jsonl
+
+# --- Cluster settings ------------------------------------------
+
+# Path to the .sif apptainer. Use your own container or the prebuilt one below.
 CONTAINER_PATH=/projects/2/managed_datasets/containers/vllm/vllm_25.09.sif
-# In case data is on project space define this such that apptainer binds the project space
+# In case data is on project space, define this so apptainer binds the project space.
 PROJECT_SPACE=
 
-# Prevent models from saving it /home/<user>/.cache
+PORT=8000
+DATA_SPLIT=test # Load all data
+VLLM_BASE_URL=http://localhost:$PORT/v1
+MAX_TOKENS=16
+MAX_CONCURRENT=256
+
+# ==============================================================
+# No changes needed below this line
+# ==============================================================
+
+# Prevent models from saving in /home/<user>/.cache
 DOWNLOAD_DIR=/scratch-shared/$USER/vllm/
 export HF_HOME=$DOWNLOAD_DIR
 mkdir -p $DOWNLOAD_DIR
 
+# Your Hugging Face token, needed for the gated Llama checkpoints.
+# Create it with: echo "hf_..." > ~/.hf_token && chmod 600 ~/.hf_token
 export HF_TOKEN=$(cat ~/.hf_token)
-MODEL_CHECKPOINT=meta-llama/Llama-3.3-70B-Instruct
-DATASET="/gpfs/home2/tvarelanunes/vllm-inference-slurm/data/words_full_dataset.jsonl"
-TEMPLATE_PRESET=interoception
-PORT=8000
-DATA_SPLIT=test # Load all data
-VLLM_BASE_URL=http://localhost:$PORT/v1
-TEMPERATURE=0.0
-MAX_TOKENS=16
-MAX_CONCURRENT=256
-OUTPUT_JSON="/gpfs/home2/tvarelanunes/vllm-inference-slurm/predictions/pred_llama_instruct/pred_llama_instruct2_temp0_full_dataset.jsonl"
-VLLM_INFERENCE_SCRIPT=/home/tvarelanunes/vllm-inference-slurm/src/vllm_serve.py
 
 BIND_DIRS="/scratch-shared/$USER,$PROJECT_SPACE"
 apptainer exec --nv \
